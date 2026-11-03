@@ -3,9 +3,66 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:        # "Run workflow" button = force a full deploy
+
+concurrency:
+  group: deploy             # never run two deploys at the same time
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  # ---------- Decide what needs deploying ----------
+  changes:
+    runs-on: self-hosted
+    outputs:
+      backend: ${{ steps.decide.outputs.backend }}
+      frontend: ${{ steps.decide.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/**'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/**'
+
+      - name: Decide what to deploy
+        id: decide
+        env:
+          BACKEND: ${{ steps.filter.outputs.backend }}
+          FRONTEND: ${{ steps.filter.outputs.frontend }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          FORCE=false
+
+          # Manual run = deploy everything
+          if [ "$EVENT" = "workflow_dispatch" ]; then FORCE=true; fi
+
+          # First setup = nothing deployed on the server yet
+          if [ ! -x /opt/reactgoapp/server ] || [ ! -f /var/www/reactgoapp/index.html ]; then
+            FORCE=true
+          fi
+
+          if [ "$FORCE" = "true" ] || [ "$BACKEND" = "true" ]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$FORCE" = "true" ] || [ "$FRONTEND" = "true" ]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------- Go backend ----------
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -13,10 +70,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          cache-dependency-path: backend/go.sum
 
       - name: Build backend
         working-directory: backend
@@ -24,15 +78,44 @@ jobs:
           go vet ./...
           go build -o server .
 
+      - name: Deploy backend
+        run: |
+          install -m 755 backend/server /opt/reactgoapp/server.new
+          mv /opt/reactgoapp/server.new /opt/reactgoapp/server
+          sudo systemctl restart reactgoapp
+
+      - name: Check the backend is up
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsS http://127.0.0.1:8080/api/employees > /dev/null; then
+              echo "Backend is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend did not start. Last log lines:"
+          journalctl -u reactgoapp -n 30 --no-pager || true
+          exit 1
+
+  # ---------- React frontend ----------
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Build frontend
         working-directory: frontend
         run: |
           npm ci
           npm run build
 
-      - name: Deploy
-        run: |
-          install -m 755 backend/server /opt/reactgoapp/server.new
-          mv /opt/reactgoapp/server.new /opt/reactgoapp/server
-          rsync -a --delete frontend/dist/ /var/www/reactgoapp/
-          sudo systemctl restart reactgoapp
+      - name: Deploy frontend
+        run: rsync -a --delete frontend/dist/ /var/www/reactgoapp/

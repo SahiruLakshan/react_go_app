@@ -98,7 +98,7 @@ function App() {
     <div className="container">
 
       <h1>
-        Employee Managemen
+        Employee Management
       </h1>
 
       <EmployeeForm

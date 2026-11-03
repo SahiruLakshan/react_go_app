@@ -3,7 +3,7 @@ import type {
   CreateEmployeeRequest,
 } from "../types/employee";
 
-const API_URL = "http://localhost:8080/api";
+const API_URL = "/api";
 
 export async function getEmployees(): Promise<Employee[]> {
   const response = await fetch(`${API_URL}/employees`);

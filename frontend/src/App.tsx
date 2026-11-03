@@ -98,7 +98,7 @@ function App() {
     <div className="container">
 
       <h1>
-        Employee Management Dashboard
+        Employee Management Dashboard by Sahiru
       </h1>
 
       <EmployeeForm
